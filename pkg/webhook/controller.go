@@ -569,7 +569,8 @@ func (wc *WebhookController) getSessions(ctx context.Context, username, clustern
 
 // dedupeStrings removes duplicates from a slice of strings while preserving order.
 func dedupeStrings(in []string) []string {
-	out := make([]string, 0, len(in))
+	slices.
+		out := make([]string, 0, len(in))
 	seen := make(map[string]bool)
 	for _, v := range in {
 		if !seen[v] {

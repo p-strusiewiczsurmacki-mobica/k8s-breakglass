@@ -31,6 +31,7 @@ import (
 
 	"github.com/telekom/k8s-breakglass/pkg/api"
 	"github.com/telekom/k8s-breakglass/pkg/breakglass"
+	"github.com/telekom/k8s-breakglass/pkg/cert"
 	"github.com/telekom/k8s-breakglass/pkg/cluster"
 	"github.com/telekom/k8s-breakglass/pkg/config"
 	"github.com/telekom/k8s-breakglass/pkg/mail"
@@ -210,9 +211,10 @@ func main() {
 		enableValidatingWebhooks bool
 
 		// Configuration flags
-		configPath          string
-		breakglassNamespace string
-		disableEmail        bool
+		configPath               string
+		breakglassNamespace      string
+		disableEmail             bool
+		breakglassWebhookSvcName string
 
 		// Interval flags
 		clusterConfigCheckInterval string
@@ -302,6 +304,8 @@ func main() {
 		"The Kubernetes namespace containing breakglass resources (e.g., IdentityProvider secrets)")
 	flag.BoolVar(&disableEmail, "disable-email", getEnvBool("BREAKGLASS_DISABLE_EMAIL", false),
 		"Disable email notifications for breakglass session requests")
+	flag.StringVar(&breakglassWebhookSvcName, "breakglass-webhook-service-name", getEnvString("BREAKGLASS_WEBHOOK_SERVICE_NAME", "breakglass-webhook-service"),
+		"The webhook service name for breakglass validation webhooks.")
 
 	// Parse command-line flags and enable logging flag options
 	flag.Parse()
@@ -471,6 +475,8 @@ func main() {
 		apiControllers = append(apiControllers, breakglass.NewBreakglassEscalationController(log, &escalationManager, auth.Middleware()))
 		log.Infow("API controllers enabled", "components", "BreakglassSession, BreakglassEscalation")
 	}
+
+	cert.SetupRotator()
 
 	// Webhook controller is always registered but may not be exposed via webhooks
 	webhookCtrl := webhook.NewWebhookController(log, cfg, &sessionManager, &escalationManager, ccProvider, denyEval)
@@ -958,6 +964,8 @@ func setupWebhooks(
 		} else {
 			log.Infow("Validating webhooks disabled via --enable-validating-webhooks=false")
 		}
+
+		// setup rotator here?
 
 		// Start webhook server (blocks) but we run it in a goroutine so it doesn't prevent the API server
 		log.Infow("Starting webhook manager", "bindAddress", webhookBindAddr)
