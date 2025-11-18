@@ -1,0 +1,17 @@
+[ req ]
+distinguished_name = dn
+req_extensions = req_ext
+prompt = no
+[ dn ]
+CN = keycloak.keycloak.svc.cluster.local
+[ req_ext ]
+subjectAltName = @alt_names
+[ alt_names ]
+DNS.1 = keycloak
+DNS.2 = keycloak.keycloak
+DNS.3 = keycloak.keycloak.svc
+DNS.4 = keycloak.keycloak.svc.cluster.local
+DNS.5 = localhost
+DNS.6 = breakglass-dev-keycloak.breakglass-dev-system.svc.cluster.local
+DNS.7 = breakglass-dev-keycloak
+DNS.8 = breakglass.system.svc.cluster.local

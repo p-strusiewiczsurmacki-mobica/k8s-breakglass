@@ -24,8 +24,8 @@ spec:
         fsGroup: 65532
       serviceAccountName: manager
       containers:
-        - image: breakglass:e2e
-          imagePullPolicy: "Always"
+        - image: harbor.local/library/breakglass-2:latest
+          imagePullPolicy: IfNotPresent
           name: breakglass
           args:
             - --config-path=/config/config.yaml

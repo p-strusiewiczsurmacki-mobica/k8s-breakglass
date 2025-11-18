@@ -56,7 +56,7 @@ metadata:
 spec:
   primary: true
   oidc:
-    authority: "https://keycloak.example.com/realms/master"
+    authority: "https://localhost/realms/master"
     clientID: "breakglass-ui"
 ```
 

@@ -18,6 +18,8 @@ resources:
 - ../crd
 - ../rbac
 - ../deployment
+- ../webhook
+- ./resources/idp.yaml
 - ./resources/keycloak.yaml
 - ./resources/mailhog.yaml
 - ./resources/crs/cluster-configs-test.yaml

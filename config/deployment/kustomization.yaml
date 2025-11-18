@@ -10,5 +10,5 @@ images:
   newName: harbor.das-schiff.telekom.de/schiff-dev/breakglass-2
   newTag: latest
 - name: controller
-  newName: harbor.das-schiff.telekom.de/schiff-dev/breakglass-2
+  newName: harbor.local/library/breakglass-2
   newTag: latest

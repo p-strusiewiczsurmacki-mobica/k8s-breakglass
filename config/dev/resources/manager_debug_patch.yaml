@@ -8,7 +8,25 @@ spec:
     spec:
       containers:
       - name: breakglass
-        image: breakglass:e2e
+        image: harbor.local/library/breakglass-2:latest
         imagePullPolicy: IfNotPresent
-        args: ["--debug"]
+        args:
+            - --config-path=/config/config.yaml
+            - --pod-namespace=$(POD_NAMESPACE)
+            - --metrics-bind-address=:8081
+            - --health-probe-bind-address=:8082
+            - --leader-elect-namespace=$(POD_NAMESPACE)
+            - --leader-elect-id=breakglass.telekom.io
+            - --cluster-config-check-interval=10m
+            - --escalation-status-update-interval=10m
+            # Component enable flags for multi-instance deployments (all default to true)
+            - --enable-frontend=true
+            - --enable-api=true
+            - --enable-cleanup=true
+            - --enable-webhooks=true
+            - --enable-validating-webhooks=true
+            # Webhook metrics server (optional separate endpoint)
+            - --webhooks-metrics-bind-address=:8083
+            - --webhooks-metrics-secure=false
+            - --debug
         resources: {}
