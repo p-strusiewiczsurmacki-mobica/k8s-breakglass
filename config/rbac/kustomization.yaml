@@ -12,3 +12,5 @@ resources:
 - identityprovider_role_binding.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
+- validatingwebhookconfigurations_role.yaml
+- validatingwebhookconfigurations_role_binding.yaml

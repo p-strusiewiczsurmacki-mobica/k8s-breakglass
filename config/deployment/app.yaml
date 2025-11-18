@@ -24,12 +24,11 @@ spec:
         fsGroup: 65532
       serviceAccountName: manager
       containers:
-        - image: harbor.local/library/breakglass-2:latest
+        - image: harbor.local/library/breakglass-2:v1
           imagePullPolicy: IfNotPresent
           name: breakglass
           args:
             - --config-path=/config/config.yaml
-            - --pod-namespace=$(POD_NAMESPACE)
             - --metrics-bind-address=:8081
             - --health-probe-bind-address=:8082
             - --leader-elect-namespace=$(POD_NAMESPACE)
@@ -98,9 +97,16 @@ spec:
               readOnly: true
             - mountPath: /tmp
               name: tmp
+            - mountPath: /tmp/k8s-webhook-server/serving-certs
+              name: cert
+              readOnly: true
       volumes:
         - name: config
           configMap:
             name: config
         - name: tmp
           emptyDir: {}
+        - name: cert
+          secret:
+            defaultMode: 420
+            secretName: breakglass-dev-breakglass-webhook-service

@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= harbor.local/library/breakglass-2:latest
+IMG ?= harbor.local/library/breakglass-2:v1
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))

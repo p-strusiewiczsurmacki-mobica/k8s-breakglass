@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strconv"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/telekom/k8s-breakglass/pkg/api"
 	"github.com/telekom/k8s-breakglass/pkg/breakglass"
+	"github.com/telekom/k8s-breakglass/pkg/cert"
 	"github.com/telekom/k8s-breakglass/pkg/cluster"
 	"github.com/telekom/k8s-breakglass/pkg/config"
 	"github.com/telekom/k8s-breakglass/pkg/mail"
@@ -62,9 +64,12 @@ func createScheme(log *zap.SugaredLogger) *runtime.Scheme {
 
 // getEnvString returns the value of an environment variable, or the provided default if not set.
 func getEnvString(key, defaultVal string) string {
+	log.Print("reading", "key", key)
 	if val, ok := os.LookupEnv(key); ok {
+		log.Print("found", "val", val)
 		return val
 	}
+	log.Print("not found", "default", defaultVal)
 	return defaultVal
 }
 
@@ -173,10 +178,11 @@ func main() {
 		debug bool
 
 		// Webhook server flags
-		webhookBindAddr string
-		webhookCertPath string
-		webhookCertName string
-		webhookCertKey  string
+		webhookBindAddr       string
+		webhookCertPath       string
+		webhookCertName       string
+		webhookCertKey        string
+		webhookCertGeneration bool
 
 		// Metrics server flags
 		metricsAddr     string
@@ -210,9 +216,11 @@ func main() {
 		enableValidatingWebhooks bool
 
 		// Configuration flags
-		configPath          string
-		breakglassNamespace string
-		disableEmail        bool
+		configPath                  string
+		breakglassNamespace         string
+		disableEmail                bool
+		webhookSvcName              string
+		webhookValidatingConfigName string
 
 		// Interval flags
 		clusterConfigCheckInterval string
@@ -226,11 +234,11 @@ func main() {
 	// Webhook server configuration
 	flag.StringVar(&webhookBindAddr, "webhook-bind-address", getEnvString("WEBHOOK_BIND_ADDRESS", "0.0.0.0:9443"),
 		"The address the webhook server binds to (host:port)")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", getEnvString("WEBHOOK_CERT_PATH", "/tmp/k8s-webhook-server/serving-certs"),
+	flag.StringVar(&webhookCertPath, "webhook-cert-path", getEnvString("WEBHOOK_CERT_PATH", cert.DefaultWebhookPath),
 		"The directory that contains the webhook certificate")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", getEnvString("WEBHOOK_CERT_NAME", "tls.crt"),
+	flag.StringVar(&webhookCertName, "webhook-cert-name", getEnvString("WEBHOOK_CERT_NAME", cert.DefaultTLSCertFile),
 		"The name of the webhook certificate file")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", getEnvString("WEBHOOK_CERT_KEY", "tls.key"),
+	flag.StringVar(&webhookCertKey, "webhook-cert-key", getEnvString("WEBHOOK_CERT_KEY", cert.DefaultTLSKeyFile),
 		"The name of the webhook key file")
 
 	// Metrics server configuration
@@ -241,9 +249,9 @@ func main() {
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", getEnvString("METRICS_CERT_PATH", ""),
 		"The directory that contains the metrics server certificate")
-	flag.StringVar(&metricsCertName, "metrics-cert-name", getEnvString("METRICS_CERT_NAME", "tls.crt"),
+	flag.StringVar(&metricsCertName, "metrics-cert-name", getEnvString("METRICS_CERT_NAME", cert.DefaultTLSCertFile),
 		"The name of the metrics server certificate file")
-	flag.StringVar(&metricsCertKey, "metrics-cert-key", getEnvString("METRICS_CERT_KEY", "tls.key"),
+	flag.StringVar(&metricsCertKey, "metrics-cert-key", getEnvString("METRICS_CERT_KEY", cert.DefaultTLSKeyFile),
 		"The name of the metrics server key file")
 
 	// Webhook metrics server configuration (separate from reconciler metrics)
@@ -255,10 +263,14 @@ func main() {
 		"If set, the webhook metrics endpoint is served securely via HTTPS")
 	flag.StringVar(&webhooksMetricsCertPath, "webhooks-metrics-cert-path", getEnvString("WEBHOOKS_METRICS_CERT_PATH", ""),
 		"The directory that contains the webhook metrics server certificate")
-	flag.StringVar(&webhooksMetricsCertName, "webhooks-metrics-cert-name", getEnvString("WEBHOOKS_METRICS_CERT_NAME", "tls.crt"),
+	flag.StringVar(&webhooksMetricsCertName, "webhooks-metrics-cert-name", getEnvString("WEBHOOKS_METRICS_CERT_NAME", cert.DefaultTLSCertFile),
 		"The name of the webhook metrics server certificate file")
-	flag.StringVar(&webhooksMetricsCertKey, "webhooks-metrics-cert-key", getEnvString("WEBHOOKS_METRICS_CERT_KEY", "tls.key"),
+	flag.StringVar(&webhooksMetricsCertKey, "webhooks-metrics-cert-key", getEnvString("WEBHOOKS_METRICS_CERT_KEY", cert.DefaultTLSKeyFile),
 		"The name of the webhook metrics server key file")
+	flag.StringVar(&webhookSvcName, "webhook-service-name", getEnvString("WEBHOOK_SERVICE_NAME", "breakglass-webhook-service"), "Name of the deployed breakglass service")
+	flag.StringVar(&webhookValidatingConfigName, "webhook-validating-config-name", getEnvString("WEBHOOK_VALIDATING_CONFIG_NAME", ""),
+		"Name of the ValidatingWebhookConfiguration object for the webhook")
+	flag.BoolVar(&webhookCertGeneration, "webhook-cert-generation", getEnvBool("WEBHOOK_CERT_GENERATION", false), "Enable certificate generation for the webhook")
 
 	// Health probe configuration
 	flag.StringVar(&probeAddr, "health-probe-bind-address", getEnvString("PROBE_BIND_ADDRESS", ":8082"),
@@ -656,7 +668,7 @@ func main() {
 		setupWebhooks(managerCtx, log, scheme,
 			webhookBindAddr, webhookCertPath, webhookCertName, webhookCertKey,
 			webhooksMetricsAddr, webhooksMetricsSecure, webhooksMetricsCertPath, webhooksMetricsCertName, webhooksMetricsCertKey,
-			enableValidatingWebhooks, enableHTTP2)
+			enableValidatingWebhooks, enableHTTP2, webhookSvcName, webhookValidatingConfigName, breakglassNamespace, webhookCertGeneration)
 		log.Infow("Webhooks enabled via --enable-webhooks flag")
 	} else {
 		log.Infow("Webhooks disabled via --enable-webhooks flag")
@@ -833,6 +845,10 @@ func setupWebhooks(
 	webhooksMetricsCertKey string,
 	enableValidatingWebhooks bool,
 	enableHTTP2 bool,
+	webhookSvcName string,
+	webhookValidatingConfigName string,
+	namespace string,
+	enableCertGeneration bool,
 ) {
 	go func() {
 		log.Debugw("Starting webhook server setup")
@@ -856,15 +872,22 @@ func setupWebhooks(
 			Host: webhookHost,
 			Port: webhookPort,
 		}
-		if len(webhookCertPath) > 0 {
-			log.Infow("Initializing webhook certificate watcher using provided certificates",
-				"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName,
-				"webhook-cert-key", webhookCertKey)
+		if !enableCertGeneration && webhookCertPath != "" {
 			webhookServerOptions.CertDir = webhookCertPath
 			webhookServerOptions.CertName = webhookCertName
 			webhookServerOptions.KeyName = webhookCertKey
+			log.Infow("Initializing webhook certificate watcher using provided certificates",
+				"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName,
+				"webhook-cert-key", webhookCertKey)
+		} else if !enableCertGeneration {
+			log.Error("No webhook certificate path provided and cert generation is disabled; no webhooks will be configured")
+			return
+		} else if webhookCertPath != "" {
+			webhookServerOptions.CertDir = webhookCertPath
+			log.Infof("Cert-controller will generate certs in %q", webhookServerOptions.CertDir)
 		} else {
-			log.Infow("No webhook certificate path provided; controller-runtime will auto-generate self-signed certificates")
+			webhookServerOptions.CertDir = cert.DefaultWebhookPath
+			log.Infof("No webhook certificate path provided - cert-controller will generate certs in default directory %q", webhookServerOptions.CertDir)
 		}
 		webhookServer := webhookserver.NewServer(webhookServerOptions)
 
@@ -926,41 +949,58 @@ func setupWebhooks(
 		}
 		log.Infow("Webhook health check handlers registered")
 
-		// Register validating webhooks (conditionally based on enableValidatingWebhooks)
-		if enableValidatingWebhooks {
-			log.Debugw("Starting webhook registration for BreakglassSession")
-			if err := (&v1alpha1.BreakglassSession{}).SetupWebhookWithManager(mgr); err != nil {
-				log.Warnw("Failed to setup BreakglassSession webhook with manager", "error", err)
-				return
+		certCompleted := make(chan struct{})
+		if enableCertGeneration {
+			log.Infow("Setting up cert-controller's rotator", "webhookSvcName", webhookSvcName, "namespace", namespace, "webhookCertPath", webhookCertPath)
+			if err := cert.SetupRotator(mgr, webhookSvcName, namespace, webhookCertPath, webhookValidatingConfigName, certCompleted); err != nil {
+				log.Warnw("failed to setup cert rotator", "error", err)
 			}
-			log.Infow("Successfully registered BreakglassSession webhook")
-
-			log.Debugw("Starting webhook registration for BreakglassEscalation")
-			if err := (&v1alpha1.BreakglassEscalation{}).SetupWebhookWithManager(mgr); err != nil {
-				log.Warnw("Failed to setup BreakglassEscalation webhook with manager", "error", err)
-				return
-			}
-			log.Infow("Successfully registered BreakglassEscalation webhook")
-
-			log.Debugw("Starting webhook registration for ClusterConfig")
-			if err := (&v1alpha1.ClusterConfig{}).SetupWebhookWithManager(mgr); err != nil {
-				log.Warnw("Failed to setup ClusterConfig webhook with manager", "error", err)
-				return
-			}
-			log.Infow("Successfully registered ClusterConfig webhook")
-
-			log.Debugw("Starting webhook registration for IdentityProvider")
-			if err := (&v1alpha1.IdentityProvider{}).SetupWebhookWithManager(mgr); err != nil {
-				log.Warnw("Failed to setup IdentityProvider webhook with manager", "error", err)
-				return
-			}
-			log.Infow("Successfully registered IdentityProvider webhook")
 		} else {
-			log.Infow("Validating webhooks disabled via --enable-validating-webhooks=false")
+			close(certCompleted)
 		}
 
 		// Start webhook server (blocks) but we run it in a goroutine so it doesn't prevent the API server
 		log.Infow("Starting webhook manager", "bindAddress", webhookBindAddr)
+
+		go func() {
+			if enableCertGeneration {
+				// wait for cert generation
+				<-certCompleted
+			}
+
+			// Register validating webhooks (conditionally based on enableValidatingWebhooks)
+			if enableValidatingWebhooks {
+				log.Debugw("Starting webhook registration for BreakglassSession")
+				if err := (&v1alpha1.BreakglassSession{}).SetupWebhookWithManager(mgr); err != nil {
+					log.Warnw("Failed to setup BreakglassSession webhook with manager", "error", err)
+					return
+				}
+				log.Infow("Successfully registered BreakglassSession webhook")
+
+				log.Debugw("Starting webhook registration for BreakglassEscalation")
+				if err := (&v1alpha1.BreakglassEscalation{}).SetupWebhookWithManager(mgr); err != nil {
+					log.Warnw("Failed to setup BreakglassEscalation webhook with manager", "error", err)
+					return
+				}
+				log.Infow("Successfully registered BreakglassEscalation webhook")
+
+				log.Debugw("Starting webhook registration for ClusterConfig")
+				if err := (&v1alpha1.ClusterConfig{}).SetupWebhookWithManager(mgr); err != nil {
+					log.Warnw("Failed to setup ClusterConfig webhook with manager", "error", err)
+					return
+				}
+				log.Infow("Successfully registered ClusterConfig webhook")
+
+				log.Debugw("Starting webhook registration for IdentityProvider")
+				if err := (&v1alpha1.IdentityProvider{}).SetupWebhookWithManager(mgr); err != nil {
+					log.Warnw("Failed to setup IdentityProvider webhook with manager", "error", err)
+					return
+				}
+				log.Infow("Successfully registered IdentityProvider webhook")
+			} else {
+				log.Infow("Validating webhooks disabled via --enable-validating-webhooks=false")
+			}
+		}()
 
 		// Start the manager in a blocking call that will also handle cache synchronization
 		if err := mgr.Start(ctx); err != nil {

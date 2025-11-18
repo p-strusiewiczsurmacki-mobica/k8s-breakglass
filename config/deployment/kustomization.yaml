@@ -11,4 +11,4 @@ images:
   newTag: latest
 - name: controller
   newName: harbor.local/library/breakglass-2
-  newTag: latest
+  newTag: v1

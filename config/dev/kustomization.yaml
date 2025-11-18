@@ -29,12 +29,12 @@ resources:
 - ./resources/rbac/tenant-rbac-test.yaml
 
 patches:
-- target:
-    group: apps
-    version: v1
-    kind: Deployment
-    name: manager
-  path: ./resources/cert_volumes_patch.yaml
+# - target:
+#     group: apps
+#     version: v1
+#     kind: Deployment
+#     name: manager
+#   path: ./resources/cert_volumes_patch.yaml
 - target:
     group: apps
     version: v1

@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multitool
+  namespace: breakglass-dev-system
+spec:
+  selector:
+    matchLabels:
+      run: multitool
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        run: multitool
+    spec:
+      containers:
+      - name: multitool
+        image: wbitt/network-multitool:latest
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+---
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: multitool-first
+# spec:
+#   selector:
+#     matchLabels:
+#       app: multitool-first
+#   replicas: 3
+#   template:
+#     metadata:
+#       labels:
+#         app: multitool-first
+#     spec:
+#       containers:
+#       - name: multitool
+#         image: wbitt/network-multitool:latest
+#         ports:
+#         - containerPort: 80
+#         - containerPort: 443
+# ---
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: multitool-second
+# spec:
+#   selector:
+#     matchLabels:
+#       app: multitool-second
+#   replicas: 3
+#   template:
+#     metadata:
+#       labels:
+#         app: multitool-second
+#     spec:
+#       containers:
+#       - name: multitool
+#         image: wbitt/network-multitool:latest
+#         ports:
+#         - containerPort: 80
+#         - containerPort: 443
