@@ -670,14 +670,12 @@ func (wc BreakglassSessionController) handleRequestBreakglassSession(c *gin.Cont
 
 	// Get approval timeout from escalation spec, or use cluster default
 	approvalTimeout := time.Hour // Default: 1 hour
-	if matchedEsc != nil {
-		if matchedEsc.Spec.ApprovalTimeout != "" {
-			if d, err := time.ParseDuration(matchedEsc.Spec.ApprovalTimeout); err == nil && d > 0 {
-				approvalTimeout = d
-				reqLog.Debugw("Using approval timeout from escalation spec", "approvalTimeout", approvalTimeout)
-			} else {
-				reqLog.Warnw("Invalid ApprovalTimeout in escalation spec; falling back to default", "value", matchedEsc.Spec.ApprovalTimeout, "error", err)
-			}
+	if matchedEsc.Spec.ApprovalTimeout != "" {
+		if d, err := time.ParseDuration(matchedEsc.Spec.ApprovalTimeout); err == nil && d > 0 {
+			approvalTimeout = d
+			reqLog.Debugw("Using approval timeout from escalation spec", "approvalTimeout", approvalTimeout)
+		} else {
+			reqLog.Warnw("Invalid ApprovalTimeout in escalation spec; falling back to default", "value", matchedEsc.Spec.ApprovalTimeout, "error", err)
 		}
 	}
 
@@ -712,7 +710,7 @@ func (wc BreakglassSessionController) handleRequestBreakglassSession(c *gin.Cont
 
 	if wc.disableEmail {
 		reqLog.Debug("Email sending disabled via --disable-email flag")
-	} else if matchedEsc != nil && matchedEsc.Spec.DisableNotifications != nil && *matchedEsc.Spec.DisableNotifications {
+	} else if matchedEsc.Spec.DisableNotifications != nil && *matchedEsc.Spec.DisableNotifications {
 		reqLog.Infow("Email sending disabled for this escalation via DisableNotifications",
 			"escalationName", matchedEsc.Name,
 			"cluster", bs.Spec.Cluster,

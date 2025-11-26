@@ -10,10 +10,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	breakglassv1alpha1 "github.com/telekom/k8s-breakglass/api/v1alpha1"
+	"github.com/telekom/k8s-breakglass/pkg/metrics"
 )
 
 // ConversionErrorMetricsRecorder is a callback to record conversion failure metrics
@@ -481,4 +484,34 @@ func (l *IdentityProviderLoader) recordConversionFailureMetric(idpName, failureR
 	if l.metricsRecorder != nil {
 		l.metricsRecorder(idpName, failureReason)
 	}
+}
+
+func DefaultIdentityProviderLoader(ctx context.Context, scheme *runtime.Scheme, log *zap.SugaredLogger) (*IdentityProviderLoader, error) {
+	// Create a Kubernetes client for loading IdentityProvider (with custom scheme)
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		log.Fatalf("Error getting Kubernetes config: %v", err)
+	}
+
+	kubeClient, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		log.Fatalf("Error creating Kubernetes client: %v", err)
+	}
+
+	// Load IdentityProvider configuration for group sync
+	idpLoader := NewIdentityProviderLoader(kubeClient)
+	idpLoader.WithLogger(log)
+
+	// Set up metrics recorder for conversion failures
+	idpLoader.WithMetricsRecorder(func(idpName, failureReason string) {
+		metrics.IdentityProviderConversionErrors.WithLabelValues(idpName, failureReason).Inc()
+	})
+
+	// Validate IdentityProvider exists (mandatory)
+	if err := idpLoader.ValidateIdentityProviderExists(ctx); err != nil {
+		metrics.IdentityProviderValidationFailed.WithLabelValues("not_found").Inc()
+		return nil, fmt.Errorf("IdentityProvider validation failed: %w", err)
+	}
+
+	return idpLoader, nil
 }

@@ -18,9 +18,13 @@ import (
 	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/telekom/k8s-breakglass/pkg/breakglass"
+	"github.com/telekom/k8s-breakglass/pkg/cluster"
 	"github.com/telekom/k8s-breakglass/pkg/config"
 	"github.com/telekom/k8s-breakglass/pkg/metrics"
+	"github.com/telekom/k8s-breakglass/pkg/policy"
 	"github.com/telekom/k8s-breakglass/pkg/system"
+	"github.com/telekom/k8s-breakglass/pkg/webhook"
 	"go.uber.org/zap"
 )
 
@@ -815,4 +819,27 @@ func (s *Server) handleOIDCProxy(c *gin.Context) {
 	// Record successful proxy completion
 	metrics.OIDCProxySuccess.WithLabelValues("authority").Inc()
 	metrics.APIEndpointDuration.WithLabelValues("handleOIDCProxy").Observe(time.Since(start).Seconds())
+}
+
+func Setup(sessionController *breakglass.BreakglassSessionController, escalationManager *breakglass.EscalationManager,
+	sessionManager *breakglass.SessionManager, enableFrontend, enableAPI bool, configPath string,
+	auth *AuthHandler, ccProvider *cluster.ClientProvider, denyEval *policy.Evaluator,
+	cfg *config.Config, log *zap.SugaredLogger) []APIController {
+	// Register API controllers based on component flags
+	apiControllers := []APIController{}
+
+	if enableFrontend {
+		log.Infow("Frontend UI enabled via --enable-frontend=true")
+	}
+
+	if enableAPI {
+		apiControllers = append(apiControllers, sessionController)
+		apiControllers = append(apiControllers, breakglass.NewBreakglassEscalationController(log, escalationManager, auth.Middleware(), configPath))
+		log.Infow("API controllers enabled", "components", "BreakglassSession, BreakglassEscalation")
+	}
+
+	// Webhook controller is always registered but may not be exposed via webhooks
+	webhookCtrl := webhook.NewWebhookController(log, *cfg, sessionManager, escalationManager, ccProvider, denyEval)
+	apiControllers = append(apiControllers, webhookCtrl)
+	return apiControllers
 }
