@@ -25,6 +25,7 @@ import (
 	"github.com/telekom/k8s-breakglass/pkg/cli"
 	"github.com/telekom/k8s-breakglass/pkg/cluster"
 	"github.com/telekom/k8s-breakglass/pkg/config"
+	"github.com/telekom/k8s-breakglass/pkg/indexer"
 	"github.com/telekom/k8s-breakglass/pkg/leaderelection"
 	"github.com/telekom/k8s-breakglass/pkg/mail"
 	"github.com/telekom/k8s-breakglass/pkg/metrics"
@@ -138,12 +139,6 @@ func main() {
 	auth := api.NewAuth(log, cfg)
 	server := api.NewServer(zapLogger, cfg, cliConfig.Debug, auth)
 
-	kubeContext := cfg.Kubernetes.Context
-	sessionManager, err := breakglass.NewSessionManager(kubeContext)
-	if err != nil {
-		log.Fatalf("Error creating breakglass session manager: %v", err)
-	}
-
 	// Create a unified scheme with all CRDs registered
 	scheme, err := utils.CreateScheme()
 	if err != nil {
@@ -151,28 +146,19 @@ func main() {
 	}
 	log.Debugw("Scheme initialized with CRDs", "types", "corev1, BreakglassSession, BreakglassEscalation, ClusterConfig, IdentityProvider, MailProvider, DenyPolicy")
 
-	reconcilerMgr, err := createReconcilerManager(restConfig, scheme, log,
-		metricsAddr, metricsSecure, metricsCertPath, metricsCertName, metricsCertKey,
-		probeAddr, enableHTTP2)
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		log.Fatalf("Error getting Kubernetes config: %v", err)
+	}
+
+	reconcilerMgr, err := reconciler.NewManager(restConfig, scheme, cliConfig.MetricsAddr, cliConfig.MetricsSecure,
+		cliConfig.MetricsCertPath, cliConfig.MetricsCertName, cliConfig.MetricsCertKey, cliConfig.ProbeAddr, cliConfig.EnableHTTP2, log)
 	if err != nil {
 		log.Fatalf("Failed to create controller-runtime manager: %v", err)
 	}
-	indexer.RegisterCommonFieldIndexes(context.Background(), reconcilerMgr.GetFieldIndexer(), log)
 
-	kubeClient := reconcilerMgr.GetClient()
-	sessionManager := breakglass.NewSessionManagerWithClient(reconcilerMgr.GetClient())
-
-	// Load IdentityProvider configuration for group sync
-	idpLoader := config.NewIdentityProviderLoader(kubeClient)
-	idpLoader.WithLogger(log)
-
-	// Set up metrics recorder for conversion failures
-	idpLoader.WithMetricsRecorder(func(idpName, failureReason string) {
-		metrics.IdentityProviderConversionErrors.WithLabelValues(idpName, failureReason).Inc()
-	})
-
-	// Validate IdentityProvider exists (mandatory)
 	ctx := context.Background()
+	indexer.RegisterCommonFieldIndexes(ctx, reconcilerMgr.GetFieldIndexer(), log)
 
 	idpLoader, err := config.DefaultIdentityProviderLoader(ctx, scheme, log)
 	if err != nil {
@@ -189,11 +175,6 @@ func main() {
 
 	resolver := breakglass.SetupResolver(idpConfig, log)
 
-	escalationManager, err := breakglass.NewEscalationManager(kubeContext, resolver)
-	if err != nil {
-		log.Fatalf("Error creating breakglass escalation manager: %v", err)
-	}
-
 	escalationManager := breakglass.NewEscalationManagerWithClient(reconcilerMgr.GetClient(), resolver)
 
 	// Build shared cluster config provider & deny policy evaluator reusing escalation manager client
@@ -208,6 +189,8 @@ func main() {
 	// Enable multi-IDP support in auth handler for token verification
 	// This allows the backend to verify tokens from any configured IDP, not just the default one
 	auth.WithIdentityProviderLoader(idpLoader)
+
+	sessionManager := breakglass.NewSessionManagerWithClient(reconcilerMgr.GetClient())
 
 	// Setup session controller with all dependencies
 	sessionController := breakglass.NewBreakglassSessionController(log, cfg, &sessionManager, &escalationManager,
@@ -262,8 +245,7 @@ func main() {
 	}
 
 	// Event recorder for emitting Kubernetes events (persisted to API server)
-	restCfg := ctrl.GetConfigOrDie()
-	kubeClientset, err := kubernetes.NewForConfig(restCfg)
+	kubeClientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		log.Fatalf("failed to create kubernetes clientset for event recorder: %v", err)
 	}
@@ -381,12 +363,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := setupReconcilerManager(managerCtx, log, reconcilerMgr, idpLoader, server); err != nil {
-			recMgrErr <- err
-		}
-		if err := reconciler.Setup(managerCtx, log, scheme, idpLoader, server, cliConfig.MetricsAddr,
-			cliConfig.MetricsSecure, cliConfig.MetricsCertPath, cliConfig.MetricsCertName,
-			cliConfig.MetricsCertKey, cliConfig.ProbeAddr, cliConfig.EnableHTTP2); err != nil {
+		if err := reconciler.Setup(managerCtx, reconcilerMgr, idpLoader, server, log); err != nil {
 			recMgrErr <- err
 		}
 	}()
@@ -450,129 +427,4 @@ func main() {
 	log.Info("Waiting for all goroutines to finish")
 	wg.Wait()
 	log.Info("Breakglass controller shutdown complete")
-}
-
-func setupReconcilerManager(
-	ctx context.Context,
-	log *zap.SugaredLogger,
-	mgr ctrl.Manager,
-	idpLoader *config.IdentityProviderLoader,
-	server *api.Server,
-) error {
-	log.Debugw("Starting reconciler manager with unified scheme")
-
-	if mgr == nil {
-		return fmt.Errorf("controller-runtime manager is nil; reconcilers will not run")
-	}
-
-	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
-		return fmt.Errorf("failed to add healthz check to reconciler manager: %w", err)
-	}
-	if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
-		return fmt.Errorf("failed to add readyz check to reconciler manager: %w", err)
-	}
-	log.Infow("Health check handlers registered")
-
-	// Register IdentityProvider Reconciler with controller-runtime manager
-	log.Debugw("Setting up IdentityProvider reconciler")
-	idpReconciler := config.NewIdentityProviderReconciler(
-		mgr.GetClient(),
-		log,
-		func(reloadCtx context.Context) error {
-			return server.ReloadIdentityProvider(idpLoader)
-		},
-	)
-	idpReconciler.WithErrorHandler(func(ctx context.Context, err error) {
-		log.Errorw("IdentityProvider reconciliation error", "error", err)
-		metrics.IdentityProviderLoadFailed.WithLabelValues("reconciler_error").Inc()
-	})
-	idpReconciler.WithEventRecorder(mgr.GetEventRecorderFor("breakglass-controller"))
-	idpReconciler.WithResyncPeriod(10 * time.Minute)
-
-	// Set reconciler in API server so it can use the cached IDPs
-	// This prevents the API from querying the Kubernetes APIServer on every /api/config/idps request
-	server.SetIdentityProviderReconciler(idpReconciler)
-
-	if err := idpReconciler.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to setup IdentityProvider reconciler with manager: %w", err)
-	}
-	log.Infow("Successfully registered IdentityProvider reconciler", "resyncPeriod", "10m")
-
-	// Register BreakglassEscalation Reconciler with controller-runtime manager
-	log.Debugw("Setting up BreakglassEscalation reconciler")
-	escalationReconciler := config.NewEscalationReconciler(
-		mgr.GetClient(),
-		log,
-		mgr.GetEventRecorderFor("breakglass-escalation-controller"),
-		nil, // no onReload callback needed for escalations
-		func(ctx context.Context, err error) {
-			log.Errorw("BreakglassEscalation reconciliation error", "error", err)
-			metrics.IdentityProviderLoadFailed.WithLabelValues("escalation_reconciler_error").Inc()
-		},
-		10*time.Minute,
-	)
-
-	// Set reconciler in API server so it can use the cached escalation→IDP mapping
-	// This prevents the API from querying the Kubernetes APIServer on every /api/config/idps request
-	server.SetEscalationReconciler(escalationReconciler)
-
-	if err := escalationReconciler.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to setup BreakglassEscalation reconciler with manager: %w", err)
-	}
-	log.Infow("Successfully registered BreakglassEscalation reconciler", "resyncPeriod", "10m")
-
-	// Note: Leadership election is NOT handled by the manager at this level.
-	// Background loops (cleanup, escalation updater, cluster config checker) use the resourcelock
-	// to coordinate and run only on the leader. The signal propagation to those loops happens
-	// outside this manager in the main() function after the manager and loops are set up.
-
-	// Start manager (blocks) but we run it in a goroutine so it doesn't prevent the API server
-	// The manager runs reconcilers on all replicas (no leader election)
-	log.Infow("Starting controller-runtime reconciler manager (no leader election at manager level)")
-	if err := mgr.Start(ctx); err != nil {
-		return fmt.Errorf("controller-runtime reconciler manager exited: %w", err)
-	}
-
-	return nil
-}
-
-func createReconcilerManager(
-	restCfg *rest.Config,
-	scheme *runtime.Scheme,
-	log *zap.SugaredLogger,
-	metricsAddr string,
-	metricsSecure bool,
-	metricsCertPath string,
-	metricsCertName string,
-	metricsCertKey string,
-	probeAddr string,
-	enableHTTP2 bool,
-) (ctrl.Manager, error) {
-	tlsOpts := []func(*tls.Config){}
-	if !enableHTTP2 {
-		tlsOpts = append(tlsOpts, disableHTTP2)
-	}
-
-	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: metricsSecure,
-		TLSOpts:       tlsOpts,
-	}
-
-	if len(metricsCertPath) > 0 {
-		log.Infow("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName,
-			"metrics-cert-key", metricsCertKey)
-		metricsServerOptions.CertDir = metricsCertPath
-		metricsServerOptions.CertName = metricsCertName
-		metricsServerOptions.KeyName = metricsCertKey
-	}
-
-	return ctrl.NewManager(restCfg, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		HealthProbeBindAddress: probeAddr,
-		WebhookServer:          nil,
-		LeaderElection:         false,
-	})
 }

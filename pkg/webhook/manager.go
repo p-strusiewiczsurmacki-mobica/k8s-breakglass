@@ -10,7 +10,7 @@ import (
 	"github.com/telekom/k8s-breakglass/api/v1alpha1"
 	"github.com/telekom/k8s-breakglass/pkg/cert"
 	"github.com/telekom/k8s-breakglass/pkg/cli"
-	"github.com/telekom/k8s-breakglass/pkg/indexes"
+	"github.com/telekom/k8s-breakglass/pkg/indexer"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -137,7 +137,7 @@ func Setup(
 	}
 	log.Infow("Webhook server created successfully")
 
-	if err := indexes.RegisterCommon(ctx, mgr.GetFieldIndexer(), log); err != nil {
+	if err := indexer.RegisterCommonFieldIndexes(ctx, mgr.GetFieldIndexer(), log); err != nil {
 		return fmt.Errorf("failed to register common field indexes: %w", err)
 	}
 

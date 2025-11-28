@@ -9,14 +9,56 @@ import (
 	"github.com/telekom/k8s-breakglass/pkg/api"
 	"github.com/telekom/k8s-breakglass/pkg/cli"
 	"github.com/telekom/k8s-breakglass/pkg/config"
-	"github.com/telekom/k8s-breakglass/pkg/indexes"
+	"github.com/telekom/k8s-breakglass/pkg/indexer"
 	"github.com/telekom/k8s-breakglass/pkg/metrics"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
+
+func NewManager(
+	restCfg *rest.Config,
+	scheme *runtime.Scheme,
+	metricsAddr string,
+	metricsSecure bool,
+	metricsCertPath string,
+	metricsCertName string,
+	metricsCertKey string,
+	probeAddr string,
+	enableHTTP2 bool,
+	log *zap.SugaredLogger,
+) (ctrl.Manager, error) {
+	tlsOpts := []func(*tls.Config){}
+	if !enableHTTP2 {
+		tlsOpts = append(tlsOpts, cli.DisableHTTP2)
+	}
+
+	metricsServerOptions := metricsserver.Options{
+		BindAddress:   metricsAddr,
+		SecureServing: metricsSecure,
+		TLSOpts:       tlsOpts,
+	}
+
+	if len(metricsCertPath) > 0 {
+		log.Infow("Initializing metrics certificate watcher using provided certificates",
+			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName,
+			"metrics-cert-key", metricsCertKey)
+		metricsServerOptions.CertDir = metricsCertPath
+		metricsServerOptions.CertName = metricsCertName
+		metricsServerOptions.KeyName = metricsCertKey
+	}
+
+	return ctrl.NewManager(restCfg, ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsServerOptions,
+		HealthProbeBindAddress: probeAddr,
+		WebhookServer:          nil,
+		LeaderElection:         false,
+	})
+}
 
 // Setup starts the controller-runtime manager with field indices and IdentityProvider reconciler.
 // This function handles:
@@ -27,61 +69,11 @@ import (
 // - Broadcasting leadership signal to background loops when acquired
 func Setup(
 	ctx context.Context,
-	log *zap.SugaredLogger,
-	scheme *runtime.Scheme,
+	mgr ctrl.Manager,
 	idpLoader *config.IdentityProviderLoader,
 	server *api.Server,
-	metricsAddr string,
-	metricsSecure bool,
-	metricsCertPath string,
-	metricsCertName string,
-	metricsCertKey string,
-	probeAddr string,
-	enableHTTP2 bool,
+	log *zap.SugaredLogger,
 ) error {
-
-	log.Debugw("Starting reconciler manager with unified scheme")
-
-	// Configure TLS for metrics server
-	// Disable HTTP/2 by default due to security vulnerabilities
-	tlsOpts := []func(*tls.Config){}
-	if !enableHTTP2 {
-		tlsOpts = append(tlsOpts, cli.DisableHTTP2)
-	}
-
-	// Metrics server configuration
-	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: metricsSecure,
-		TLSOpts:       tlsOpts,
-	}
-
-	// If explicit certificate paths are provided, use them; otherwise controller-runtime
-	// will auto-generate self-signed certificates (suitable for development/testing).
-	if len(metricsCertPath) > 0 {
-		log.Infow("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName,
-			"metrics-cert-key", metricsCertKey)
-		metricsServerOptions.CertDir = metricsCertPath
-		metricsServerOptions.CertName = metricsCertName
-		metricsServerOptions.KeyName = metricsCertKey
-	}
-
-	// Create manager without webhook server (webhooks are optional)
-	// NOTE: Manager does NOT use leader election; that's handled separately by background loops
-	// The resourcelock is passed to background loops for their own coordination
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		HealthProbeBindAddress: probeAddr,
-		WebhookServer:          nil,   // Webhooks are handled separately if enabled
-		LeaderElection:         false, // Reconcilers run on all replicas
-	})
-	if err != nil {
-		return fmt.Errorf("failed to start controller-runtime manager: %w", err)
-	}
-	log.Infow("Controller-runtime manager created successfully (no leader election at manager level)")
-
 	// Register health check handlers for liveness and readiness probes
 	// These endpoints are exposed at the health probe bind address (default :8082)
 	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
@@ -90,9 +82,9 @@ func Setup(
 	if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
 		return fmt.Errorf("failed to add readyz check to reconciler manager: %w", err)
 	}
-	log.Infow("Health check handlers registered", "endpoint", probeAddr)
+	log.Info("Health check handlers registered")
 
-	if err := indexes.RegisterCommon(ctx, mgr.GetFieldIndexer(), log); err != nil {
+	if err := indexer.RegisterCommonFieldIndexes(ctx, mgr.GetFieldIndexer(), log); err != nil {
 		return fmt.Errorf("failed to register common field indexes: %w", err)
 	}
 
